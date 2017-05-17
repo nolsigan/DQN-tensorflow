@@ -12,6 +12,7 @@ flags = tf.app.flags
 flags.DEFINE_string('model', 'm1', 'Type of model')
 flags.DEFINE_boolean('dueling', False, 'Whether to use dueling deep q-network')
 flags.DEFINE_boolean('double_q', False, 'Whether to use double q-learning')
+flags.DEFINE_boolean('demon', False, 'Whether to use learning by demonstration')
 
 # Environment
 flags.DEFINE_string('env_name', 'Breakout-v0', 'The name of gym environment to use')

@@ -27,6 +27,15 @@ class ReplayMemory:
     self.prestates = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
     self.poststates = np.empty((self.batch_size, self.history_length) + self.dims, dtype = np.float16)
 
+    # demonstration data
+    if config.demon:
+      ## change empty values and demon_size to proper values after gaining actual demonstration data
+      self.demon_size = 1000
+      self.demon_actions = np.empty(self.demon_size, dtype=np.uint8)
+      self.demon_rewards = np.empty(self.demon_size, dtype=np.int32)
+      self.demon_screens = np.empty((self.demon_size, config.screen_height, config.screen_width), dtype=np.float16)
+      self.demon_terminals = np.empty(self.demon_size, dtype=np.bool)
+
   def add(self, screen, reward, action, terminal):
     assert screen.shape == self.dims
     # NB! screen is post-state, after action and reward
