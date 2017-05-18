@@ -3,6 +3,7 @@ class AgentConfig(object):
   display = False
 
   max_step = 5000 * scale
+  max_demon = 5 * scale
   memory_size = 100 * scale
 
   batch_size = 32
@@ -29,6 +30,8 @@ class AgentConfig(object):
   double_q = False
   dueling = False
   demon = False
+
+  demon_p = 10
 
   _test_step = 5 * scale
   _save_step = _test_step * 10

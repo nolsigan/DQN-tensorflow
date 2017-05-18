@@ -33,6 +33,34 @@ class Agent(BaseModel):
     start_step = self.step_op.eval()
     start_time = time.time()
 
+    # demonstration learning before RL
+    for self.step in tqdm(range(start_step, self.max_demon), ncols=70, initial=start_step):
+        s_t, demon_action, reward, s_t_plus_1, terminal = self.memory.sample_demon()
+
+        # sample action for TD learning
+        action = self.predict_batch(s_t)
+        margin = np.ones((action.size, self.env.action_size)) * 0.8
+        margin[np.arange(action.size), action] = 0.
+
+        # double q-learning
+        pred_action = self.q_action.eval({self.s_t: s_t_plus_1})
+
+        q_t_plus_1_with_pred_action = self.target_q_with_idx.eval({
+          self.target_s_t: s_t_plus_1,
+          self.target_q_idx: [[idx, pred_a] for idx, pred_a in enumerate(pred_action)]
+        })
+
+        target_q_t = (1. - terminal) * self.discount * q_t_plus_1_with_pred_action + reward
+
+        _ = self.sess.run([self.demon_optim], {
+          self.target_q_t: target_q_t,
+          self.action: action,
+          self.s_t: s_t,
+          self.learning_rate_step: self.step,
+          self.demon_action: demon_action,
+          self.margin: margin
+        })
+
     num_game, self.update_count, ep_reward = 0, 0, 0.
     total_reward, self.total_loss, self.total_q = 0., 0., 0.
     max_avg_ep_reward = 0
@@ -125,6 +153,18 @@ class Agent(BaseModel):
 
     return action
 
+  def predict_batch(self, s_t, test_ep=None):
+    ep = test_ep or (self.ep_end +
+        max(0., (self.ep_start - self.ep_end)
+          * (self.ep_end_t - max(0., self.step - self.learn_start)) / self.ep_end_t))
+
+    if random.random() < ep:
+      action = np.random.randint(self.env.action_size, size=s_t.shape[0])
+    else:
+      action = self.q_action.eval({self.s_t: s_t})
+
+    return action
+
   def observe(self, screen, reward, action, terminal):
     reward = max(self.min_reward, min(self.max_reward, reward))
 
@@ -141,6 +181,19 @@ class Agent(BaseModel):
   def q_learning_mini_batch(self):
     if self.memory.count < self.history_length:
       return
+    elif self.demon:
+      m_s_t, m_action, m_reward, m_s_t_plus_1, m_terminal = self.memory.sample()
+      d_s_t, d_action, d_reward, d_s_t_plus_1, d_terminal = self.memory.sample_demon()
+
+      # actions taken for demonstration
+      d_action_taken = self.predict_batch(d_s_t)
+
+      p_int = self.batch_size / self.demon_p
+      s_t = np.append(d_s_t[:p_int], m_s_t[p_int:], axis=0)
+      action = np.append(d_action_taken[:p_int], m_action[p_int:], axis=0)
+      reward = np.append(d_reward[:p_int], m_reward[p_int:], axis=0)
+      s_t_plus_1 = np.append(d_s_t_plus_1[:p_int], m_s_t_plus_1[p_int:], axis=0)
+      terminal = np.append(d_terminal[:p_int], m_terminal[p_int:], axis=0)
     else:
       s_t, action, reward, s_t_plus_1, terminal = self.memory.sample()
 
@@ -161,12 +214,32 @@ class Agent(BaseModel):
       max_q_t_plus_1 = np.max(q_t_plus_1, axis=1)
       target_q_t = (1. - terminal) * self.discount * max_q_t_plus_1 + reward
 
-    _, q_t, loss, summary_str = self.sess.run([self.optim, self.q, self.loss, self.q_summary], {
-      self.target_q_t: target_q_t,
-      self.action: action,
-      self.s_t: s_t,
-      self.learning_rate_step: self.step,
-    })
+    if self.demon:
+      margin = np.ones((action.size, self.env.action_size)) * 0.8
+      margin[np.arange(action.size), d_action] = 0.
+
+      demon_fraction = np.zeros([self.batch_size], dtype=np.float32)
+      td_fraction = np.zeros([self.batch_size], dtype=np.float32)
+      demon_fraction[:p_int] = 1.
+      td_fraction[p_int:] = 1.
+
+      _, q_t, loss, summary_str = self.sess.run([self.post_optim, self.q, self.post_loss, self.q_summary], {
+        self.target_q_t: target_q_t,
+        self.action: action,
+        self.s_t: s_t,
+        self.learning_rate_step: self.step,
+        self.demon_action: d_action,
+        self.margin: margin,
+        self.demon_fraction: demon_fraction,
+        self.td_fraction: td_fraction
+      })
+    else:
+      _, q_t, loss, summary_str = self.sess.run([self.optim, self.q, self.loss, self.q_summary], {
+        self.target_q_t: target_q_t,
+        self.action: action,
+        self.s_t: s_t,
+        self.learning_rate_step: self.step,
+      })
 
     self.writer.add_summary(summary_str, self.step)
     self.total_loss += loss
@@ -303,6 +376,27 @@ class Agent(BaseModel):
               staircase=True))
       self.optim = tf.train.RMSPropOptimizer(
           self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.loss)
+
+      # loss for pretraining
+      self.demon_action = tf.placeholder('int64', [None], name='demon_action')
+      self.margin = tf.placeholder('float32', [None, self.env.action_size], name='margin')
+
+      self.supervised_loss = tf.reduce_max(self.q + self.margin, axis=1, name='supervised_loss')
+      self.l2_loss = tf.nn.l2_loss(self.w['l1_w']) + tf.nn.l2_loss(self.w['l2_w']) \
+                    + tf.nn.l2_loss(self.w['l3_w']) + tf.nn.l2_loss(self.w['l4_w']) \
+                    + tf.nn.l2_loss(self.w['q_w'])
+
+      self.demon_loss = tf.reduce_mean(clipped_error(self.delta) + self.supervised_loss + (10 ** -5) * self.l2_loss, name='demon_loss')
+      self.demon_optim = tf.train.RMSPropOptimizer(
+          self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.demon_loss)
+
+      # loss after pretraining
+      self.demon_fraction = tf.placeholder('float32', [None], name='demon_fraction')
+      self.td_fraction = tf.placeholder('float32', [None], name='td_fraction')
+
+      self.post_loss = self.demon_loss * self.demon_fraction + self.loss * self.td_fraction
+      self.post_optim = tf.train.RMSPropOptimizer(
+          self.learning_rate_op, momentum=0.95, epsilon=0.01).minimize(self.post_loss)
 
     with tf.variable_scope('summary'):
       scalar_summary_tags = ['average.reward', 'average.loss', 'average.q', \

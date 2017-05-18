@@ -59,6 +59,12 @@ class ReplayMemory:
       indexes = [(index - i) % self.count for i in reversed(range(self.history_length))]
       return self.screens[indexes, ...]
 
+  def getDemonState(self, index):
+    # only accept index >= history_length - 1
+    assert index >= self.history_length - 1, "use only indexes above history length"
+
+    return self.demon_screens[(index - (self.history_length - 1)):(index + 1), ...]
+
   def sample(self):
     # memory must include poststate, prestate and history
     assert self.count > self.history_length
@@ -91,6 +97,28 @@ class ReplayMemory:
     if self.cnn_format == 'NHWC':
       return np.transpose(self.prestates, (0, 2, 3, 1)), actions, \
         rewards, np.transpose(self.poststates, (0, 2, 3, 1)), terminals
+    else:
+      return self.prestates, actions, rewards, self.poststates, terminals
+
+  def sample_demon(self):
+    # will be determined by the way demonstration data is cumulated
+
+    indexes = []
+
+    while len(indexes) < self.batch_size:
+      index = random.randint(self.history_length, self.demon_size-1)
+
+      self.prestates[len(indexes), ...] = self.getDemonState(index-1)
+      self.poststates[len(indexes), ...] = self.getDemonState(index)
+      indexes.append(index)
+
+    actions = self.demon_actions[indexes]
+    rewards = self.demon_rewards[indexes]
+    terminals = self.demon_terminals[indexes]
+
+    if self.cnn_format == 'NHWC':
+      return np.transpose(self.prestates, (0, 2, 3, 1)), actions, \
+        rewards, np.transpose(self.poststates, (0, 2, 3 ,1)), terminals
     else:
       return self.prestates, actions, rewards, self.poststates, terminals
 
